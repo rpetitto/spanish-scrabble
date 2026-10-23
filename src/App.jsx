@@ -103,15 +103,16 @@ const fetchEnglishDefinition = async (spanishWord) => {
   try {
     const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=es&tl=en&dt=t&q=${encodeURIComponent(spanishWord)}`;
     const res = await fetch(url);
+    if (!res.ok) throw new Error("translate failed");
     const data = await res.json();
     const translated = data?.[0]?.[0]?.[0];
-    if (translated && typeof translated === 'string' && translated.toLowerCase() !== spanishWord.toLowerCase()) {
-      return translated;
+    if (translated && typeof translated === "string" && translated.trim()) {
+      return translated.trim();
     }
-    return "No English translation found.";
+    return "(sin traducción)";
   } catch (err) {
     console.error("Translation error:", err);
-    return "Translation unavailable.";
+    return "(traducción no disponible)";
   }
 };
 
@@ -277,13 +278,23 @@ const findComputerMove = async (rack, dict, board) => {
 
   // Try to place each candidate legally
   for (const cand of candidates) {
-    const placement = tryPlaceWord(board, cand.letters, isEmpty, CENTER);
+    const placement = tryPlaceWord(board, cand.letters, isEmpty, CENTER, dict);
     if (placement) return { ...cand, positions: placement };
   }
   return null;
 };
 
-const tryPlaceWord = (board, letters, isEmpty, center) => {
+const allWordsValid = (board, positions, letters, dict) => {
+  // Build temporary board with the new tiles
+  const temp = [...board];
+  positions.forEach((idx, i) => { temp[idx] = { letter: letters[i] }; });
+  const placed = positions.map((idx, i) => ({ index: idx, letter: letters[i] }));
+  const words = extractFormedWords(temp, placed);
+  if (words.length === 0) return false;
+  return words.every(w => dict.has(normalizeWordForDict(w)));
+};
+
+const tryPlaceWord = (board, letters, isEmpty, center, dict) => {
   const len = letters.length;
   // Horizontal placements
   for (let r = 0; r < 15; r++) {
@@ -297,15 +308,14 @@ const tryPlaceWord = (board, letters, isEmpty, center) => {
         if (board[idx] !== null) { ok = false; break; }
         positions.push(idx);
         if (idx === center) coversCenter = true;
-        // Check edge neighbors for connection
         const neighbors = [idx - 1, idx + 1, idx - 15, idx + 15];
         for (const n of neighbors) {
           if (n >= 0 && n < 225 && board[n] !== null && !positions.includes(n)) touches = true;
         }
       }
       if (!ok) continue;
-      if (isEmpty && coversCenter) return positions;
-      if (!isEmpty && touches) return positions;
+      const legal = (isEmpty && coversCenter) || (!isEmpty && touches);
+      if (legal && allWordsValid(board, positions, letters, dict)) return positions;
     }
   }
   // Vertical placements
@@ -326,8 +336,8 @@ const tryPlaceWord = (board, letters, isEmpty, center) => {
         }
       }
       if (!ok) continue;
-      if (isEmpty && coversCenter) return positions;
-      if (!isEmpty && touches) return positions;
+      const legal = (isEmpty && coversCenter) || (!isEmpty && touches);
+      if (legal && allWordsValid(board, positions, letters, dict)) return positions;
     }
   }
   return null;
@@ -802,6 +812,20 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
     setSelectedRackIndex(null);
   };
 
+  const handleShuffleRack = () => {
+    if (!isMyTurn) return;
+    const filled = localRack.filter(t => t !== null);
+    for (let i = filled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [filled[i], filled[j]] = [filled[j], filled[i]];
+    }
+    // Preserve null slots at the end
+    const shuffled = [...filled];
+    while (shuffled.length < localRack.length) shuffled.push(null);
+    setLocalRack(shuffled);
+    setSelectedRackIndex(null);
+  };
+
   const handlePassTurn = () => {
     if (!isMyTurn) return;
     handleClearAll();
@@ -810,9 +834,10 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
   };
 
   const toggleExchangeTile = (index) => {
-    setTilesToExchange(prev => 
-      prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
-    );
+    setTilesToExchange(prev => {
+      const next = prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index];
+      return next;
+    });
   };
 
   const confirmExchange = async () => {
