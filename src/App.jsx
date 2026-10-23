@@ -51,6 +51,16 @@ const INITIAL_BAG = (
   "H".repeat(2) + "F" + "V" + "Q" + "J" + "X" + "Z" + "Ñ"
 ).split('');
 
+// Fair Fisher-Yates shuffle
+const shuffle = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
 const toggleLetter = (letter) => {
   const toggles = {
     'A': 'Á', 'Á': 'A',
@@ -401,7 +411,7 @@ export default function App() {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     
     const initialBoard = Array(225).fill(null);
-    let bag = [...INITIAL_BAG].sort(() => Math.random() - 0.5);
+    let bag = shuffle(INITIAL_BAG);
     const p1Rack = bag.splice(0, 7);
 
     const newGame = {
@@ -456,7 +466,7 @@ export default function App() {
   const startSinglePlayer = () => {
     const localUser = { uid: 'local-player', displayName: 'Tú' };
     const initialBoard = Array(225).fill(null);
-    let bag = [...INITIAL_BAG].sort(() => Math.random() - 0.5);
+    let bag = shuffle(INITIAL_BAG);
     const humanRack = bag.splice(0, 7);
     const computerRack = bag.splice(0, 7);
 
@@ -868,7 +878,7 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
       }
     });
     // Shuffle returned tiles into bag
-    newBag.sort(() => Math.random() - 0.5);
+    newBag = shuffle(newBag);
     // Draw replacements
     for (let i = 0; i < newRack.length; i++) {
       if (newRack[i] === null && newBag.length > 0) {
