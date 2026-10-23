@@ -39,10 +39,10 @@ const BOARD_LAYOUT = [
 
 const TILE_POINTS = {
   A:1, Á:1, B:3, C:3, D:2, E:1, É:1, F:4, G:2, H:4, I:1, Í:1, J:8, L:1, M:3, 
-  N:1, Ñ:8, O:1, Ó:1, P:3, Q:5, R:1, S:1, T:1, U:1, Ú:1, V:4, X:8, Y:4, Z:10
+  N:1, Ñ:8, O:1, Ó:1, P:3, Q:5, R:1, S:1, T:1, U:1, Ú:1, V:4, X:8, Z:10
 };
 
-const INITIAL_BAG = "AAAAAAAAAAAABBBCCCCHDDDDDEEEEEEEEEEEEFGGHHIIIIIIJLLLLMMNNNNNNOOOOOOOOOPPQRRRRRSSSSSTTTTUUUUUVXYZZ".split('');
+const INITIAL_BAG = "AAAAAAAAAAAABBBCCCCHDDDDDEEEEEEEEEEEEFGGHHIIIIIIJLLLLMMNNNNNNOOOOOOOOOPPQRRRRRSSSSSSTTTTUUUUUVXZZ".split('');
 
 const toggleLetter = (letter) => {
   const toggles = {
@@ -98,32 +98,20 @@ const loadSpanishDictionary = async () => {
   return spanishDictionarySet;
 };
 
-// Function to fetch brief English definition using Gemini API
+// Free translation via MyMemory (no API key required)
 const fetchEnglishDefinition = async (spanishWord) => {
   try {
-    const apiKey = "";
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    const prompt = `Provide a very brief, clear, student-friendly English definition (1 sentence) for the Spanish word "${spanishWord}". If it's a conjugated verb or plural, briefly mention its base form as well.`;
-
-    const payload = {
-      contents: [{ parts: [{ text: prompt }] }]
-    };
-
-    const res = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(spanishWord)}&langpair=es|en`;
+    const res = await fetch(url);
     const data = await res.json();
-    const resultText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (resultText) {
-      return resultText.trim();
+    const translated = data?.responseData?.translatedText;
+    if (translated && translated.toLowerCase() !== spanishWord.toLowerCase()) {
+      return translated;
     }
-    return "Definition currently unavailable.";
+    return "No English translation found.";
   } catch (err) {
-    console.error("Error fetching English definition:", err);
-    return "Definition currently unavailable.";
+    console.error("Translation error:", err);
+    return "Translation unavailable.";
   }
 };
 
@@ -181,6 +169,38 @@ const extractFormedWords = (board, placedTiles) => {
   });
 
   return Array.from(words);
+};
+
+
+// Simple computer player: finds a dictionary word it can form from its rack
+const findComputerMove = async (rack, dict) => {
+  if (!dict || dict.size === 0) return null;
+  const letters = rack.filter(Boolean).map(l => l.toUpperCase());
+  if (letters.length < 2) return null;
+
+  // Try longer words first
+  for (let len = Math.min(letters.length, 7); len >= 2; len--) {
+    const combos = getCombinations(letters, len);
+    for (const combo of combos) {
+      const word = combo.join('');
+      const normalized = normalizeWordForDict(word);
+      if (dict.has(normalized)) {
+        return { word, letters: combo };
+      }
+    }
+    if (combos.length > 500) break; // limit search
+  }
+  return null;
+};
+
+const getCombinations = (arr, len) => {
+  if (len === 1) return arr.map(a => [a]);
+  const results = [];
+  for (let i = 0; i < arr.length; i++) {
+    const rest = getCombinations(arr.slice(i + 1), len - 1);
+    for (const r of rest) results.push([arr[i], ...r]);
+  }
+  return results;
 };
 
 export default function App() {
@@ -275,11 +295,13 @@ export default function App() {
     const localUser = { uid: 'local-player', displayName: 'Tú' };
     const initialBoard = Array(225).fill(null);
     let bag = [...INITIAL_BAG].sort(() => Math.random() - 0.5);
-    const rack = bag.splice(0, 7);
+    const humanRack = bag.splice(0, 7);
+    const computerRack = bag.splice(0, 7);
 
     const localGame = {
       players: {
-        'local-player': { name: 'Tú', score: 0, rack, isHost: true }
+        'local-player': { name: 'Tú', score: 0, rack: humanRack, isHost: true },
+        'computer': { name: 'Computadora', score: 0, rack: computerRack, isHost: false }
       },
       board: initialBoard,
       bag,
@@ -463,6 +485,60 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
     }
   }, [gameState, user.uid]);
 
+  // Computer takes its turn in single-player mode
+  useEffect(() => {
+    if (!isSinglePlayer || !gameState || gameState.currentTurn !== 'computer') return;
+    if (!onLocalUpdate) return;
+
+    const playComputerTurn = async () => {
+      const dict = await loadSpanishDictionary();
+      const computer = gameState.players.computer;
+      if (!computer) return;
+
+      const move = await findComputerMove(computer.rack, dict);
+      let newBoard = [...gameState.board];
+      let newBag = [...gameState.bag];
+      let newRack = [...computer.rack];
+      let scoreAdd = 0;
+
+      if (move) {
+        // Place the word on the first open row (simple placement)
+        const startCol = Math.floor(Math.random() * 8);
+        const row = Math.floor(Math.random() * 15);
+        for (let i = 0; i < move.letters.length; i++) {
+          const idx = row * 15 + (startCol + i);
+          if (idx < 225 && newBoard[idx] === null) {
+            newBoard[idx] = { letter: move.letters[i] };
+            scoreAdd += (TILE_POINTS[move.letters[i]] || 0) + 2;
+            // Remove letter from rack
+            const ri = newRack.indexOf(move.letters[i]);
+            if (ri !== -1) newRack[ri] = null;
+          }
+        }
+        newRack = newRack.filter(Boolean);
+        while (newRack.length < 7 && newBag.length > 0) {
+          newRack.push(newBag.pop());
+        }
+      }
+
+      // Switch back to human
+      onLocalUpdate({
+        board: newBoard,
+        bag: newBag,
+        currentTurn: 'local-player',
+        players: {
+          computer: {
+            rack: newRack,
+            score: (computer.score || 0) + scoreAdd
+          }
+        }
+      });
+    };
+
+    const timer = setTimeout(playComputerTurn, 800);
+    return () => clearTimeout(timer);
+  }, [isSinglePlayer, gameState?.currentTurn]);
+
   if (!gameState || !localBoard || !localRack) {
     return (
       <div className="flex-1 flex items-center justify-center text-amber-400 font-medium">
@@ -567,7 +643,7 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
 
     const playerIds = Object.keys(gameState.players);
     const currentIndex = playerIds.indexOf(user.uid);
-    const nextTurn = isSinglePlayer ? user.uid : playerIds[(currentIndex + 1) % playerIds.length];
+    const nextTurn = isSinglePlayer ? 'computer' : playerIds[(currentIndex + 1) % playerIds.length];
 
     if (isSinglePlayer && onLocalUpdate) {
       onLocalUpdate({ currentTurn: nextTurn });
@@ -628,7 +704,7 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
     const finalBoard = localBoard.map(cell => cell ? { letter: cell.letter } : null);
     const playerIds = Object.keys(gameState.players);
     const currentIndex = playerIds.indexOf(user.uid);
-    const nextTurn = playerIds[(currentIndex + 1) % playerIds.length];
+    const nextTurn = isSinglePlayer ? 'computer' : playerIds[(currentIndex + 1) % playerIds.length];
 
     const turnPayload = {
       board: finalBoard,
