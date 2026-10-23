@@ -253,22 +253,82 @@ const extractFormedWords = (board, placedTiles) => {
 
 
 // Simple computer player: finds a dictionary word it can form from its rack
-const findComputerMove = async (rack, dict) => {
+const findComputerMove = async (rack, dict, board) => {
   if (!dict || dict.size === 0) return null;
   const letters = rack.filter(Boolean).map(l => l.toUpperCase());
   if (letters.length < 2) return null;
 
-  // Try longer words first
-  for (let len = Math.min(letters.length, 7); len >= 2; len--) {
+  const isEmpty = board.every(c => c === null);
+  const CENTER = 112;
+
+  // Collect candidate words (prefer shorter for speed)
+  const candidates = [];
+  for (let len = 2; len <= Math.min(letters.length, 5); len++) {
     const combos = getCombinations(letters, len);
-    for (const combo of combos) {
+    for (const combo of combos.slice(0, 200)) {
       const word = combo.join('');
-      const normalized = normalizeWordForDict(word);
-      if (dict.has(normalized)) {
-        return { word, letters: combo };
+      if (dict.has(normalizeWordForDict(word))) {
+        candidates.push({ word, letters: combo });
       }
     }
-    if (combos.length > 500) break; // limit search
+    if (candidates.length > 20) break;
+  }
+  if (candidates.length === 0) return null;
+
+  // Try to place each candidate legally
+  for (const cand of candidates) {
+    const placement = tryPlaceWord(board, cand.letters, isEmpty, CENTER);
+    if (placement) return { ...cand, positions: placement };
+  }
+  return null;
+};
+
+const tryPlaceWord = (board, letters, isEmpty, center) => {
+  const len = letters.length;
+  // Horizontal placements
+  for (let r = 0; r < 15; r++) {
+    for (let c = 0; c <= 15 - len; c++) {
+      const positions = [];
+      let ok = true;
+      let touches = false;
+      let coversCenter = false;
+      for (let i = 0; i < len; i++) {
+        const idx = r * 15 + (c + i);
+        if (board[idx] !== null) { ok = false; break; }
+        positions.push(idx);
+        if (idx === center) coversCenter = true;
+        // Check edge neighbors for connection
+        const neighbors = [idx - 1, idx + 1, idx - 15, idx + 15];
+        for (const n of neighbors) {
+          if (n >= 0 && n < 225 && board[n] !== null && !positions.includes(n)) touches = true;
+        }
+      }
+      if (!ok) continue;
+      if (isEmpty && coversCenter) return positions;
+      if (!isEmpty && touches) return positions;
+    }
+  }
+  // Vertical placements
+  for (let c = 0; c < 15; c++) {
+    for (let r = 0; r <= 15 - len; r++) {
+      const positions = [];
+      let ok = true;
+      let touches = false;
+      let coversCenter = false;
+      for (let i = 0; i < len; i++) {
+        const idx = (r + i) * 15 + c;
+        if (board[idx] !== null) { ok = false; break; }
+        positions.push(idx);
+        if (idx === center) coversCenter = true;
+        const neighbors = [idx - 1, idx + 1, idx - 15, idx + 15];
+        for (const n of neighbors) {
+          if (n >= 0 && n < 225 && board[n] !== null && !positions.includes(n)) touches = true;
+        }
+      }
+      if (!ok) continue;
+      if (isEmpty && coversCenter) return positions;
+      if (!isEmpty && touches) return positions;
+    }
   }
   return null;
 };
@@ -553,6 +613,9 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
   const [isValidating, setIsValidating] = useState(false);
   const [definitionModal, setDefinitionModal] = useState(null);
   const [invalidWordModal, setInvalidWordModal] = useState(null);
+  const [exchangeMode, setExchangeMode] = useState(false);
+  const [tilesToExchange, setTilesToExchange] = useState([]);
+  const [wordLookupModal, setWordLookupModal] = useState(null);
 
   useEffect(() => {
     if (gameState) {
@@ -575,25 +638,19 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
       const computer = gameState.players.computer;
       if (!computer) return;
 
-      const move = await findComputerMove(computer.rack, dict);
+      const move = await findComputerMove(computer.rack, dict, gameState.board);
       let newBoard = [...gameState.board];
       let newBag = [...gameState.bag];
       let newRack = [...computer.rack];
       let scoreAdd = 0;
 
-      if (move) {
-        // Place the word on the first open row (simple placement)
-        const startCol = Math.floor(Math.random() * 8);
-        const row = Math.floor(Math.random() * 15);
+      if (move && move.positions) {
         for (let i = 0; i < move.letters.length; i++) {
-          const idx = row * 15 + (startCol + i);
-          if (idx < 225 && newBoard[idx] === null) {
-            newBoard[idx] = { letter: move.letters[i] };
-            scoreAdd += (TILE_POINTS[move.letters[i]] || 0) + 2;
-            // Remove letter from rack
-            const ri = newRack.indexOf(move.letters[i]);
-            if (ri !== -1) newRack[ri] = null;
-          }
+          const idx = move.positions[i];
+          newBoard[idx] = { letter: move.letters[i] };
+          scoreAdd += (TILE_POINTS[move.letters[i]] || 0) + 2;
+          const ri = newRack.indexOf(move.letters[i]);
+          if (ri !== -1) newRack[ri] = null;
         }
         newRack = newRack.filter(Boolean);
         while (newRack.length < 7 && newBag.length > 0) {
@@ -668,6 +725,34 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
   };
 
   const handleBoardClick = (targetIndex) => {
+    const cell = localBoard[targetIndex];
+    // If clicking a tile placed this turn, pick it back up
+    if (cell?.isNew && isMyTurn) {
+      const placed = placedTiles.find(t => t.index === targetIndex);
+      if (placed) {
+        const newBoard = [...localBoard];
+        newBoard[targetIndex] = null;
+        setLocalBoard(newBoard);
+        const newRack = [...localRack];
+        // Put it back in its original rack slot if empty, otherwise first empty
+        if (newRack[placed.rackIndex] === null) {
+          newRack[placed.rackIndex] = placed.letter;
+        } else {
+          const empty = newRack.findIndex(t => t === null);
+          if (empty !== -1) newRack[empty] = placed.letter;
+        }
+        setLocalRack(newRack);
+        setPlacedTiles(placedTiles.filter(t => t.index !== targetIndex));
+        setSelectedRackIndex(null);
+      }
+      return;
+    }
+    // If clicking an existing (committed) tile, look up the word
+    if (cell && !cell.isNew) {
+      lookupWordAt(targetIndex);
+      return;
+    }
+    // Otherwise place selected rack tile
     if (selectedRackIndex !== null) {
       placeTileAtBoardIndex(targetIndex, selectedRackIndex);
     }
@@ -717,25 +802,99 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
     setSelectedRackIndex(null);
   };
 
-  const handlePassTurn = async () => {
+  const handlePassTurn = () => {
     if (!isMyTurn) return;
     handleClearAll();
+    setExchangeMode(true);
+    setTilesToExchange([]);
+  };
 
+  const toggleExchangeTile = (index) => {
+    setTilesToExchange(prev => 
+      prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
+    );
+  };
+
+  const confirmExchange = async () => {
     const playerIds = Object.keys(gameState.players);
     const currentIndex = playerIds.indexOf(user.uid);
     const nextTurn = isSinglePlayer ? 'computer' : playerIds[(currentIndex + 1) % playerIds.length];
 
+    let newBag = [...gameState.bag];
+    let newRack = [...localRack];
+
+    // Return selected tiles to bag and draw replacements
+    tilesToExchange.forEach(idx => {
+      if (newRack[idx]) {
+        newBag.push(newRack[idx]);
+        newRack[idx] = null;
+      }
+    });
+    // Shuffle returned tiles into bag
+    newBag.sort(() => Math.random() - 0.5);
+    // Draw replacements
+    for (let i = 0; i < newRack.length; i++) {
+      if (newRack[i] === null && newBag.length > 0) {
+        newRack[i] = newBag.pop();
+      }
+    }
+    newRack = newRack.filter(t => t !== null);
+    while (newRack.length < 7 && newBag.length > 0) {
+      newRack.push(newBag.pop());
+    }
+
+    setExchangeMode(false);
+    setTilesToExchange([]);
+
     if (isSinglePlayer && onLocalUpdate) {
-      onLocalUpdate({ currentTurn: nextTurn });
+      onLocalUpdate({
+        bag: newBag,
+        currentTurn: nextTurn,
+        players: { [user.uid]: { rack: newRack } }
+      });
       return;
     }
 
     const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomCode);
     try {
-      await updateDoc(roomRef, { currentTurn: nextTurn });
+      await updateDoc(roomRef, {
+        bag: newBag,
+        currentTurn: nextTurn,
+        [`players.${user.uid}.rack`]: newRack
+      });
     } catch (e) {
       console.error("Error al pasar el turno", e);
     }
+  };
+
+  const cancelExchange = () => {
+    setExchangeMode(false);
+    setTilesToExchange([]);
+  };
+
+  const lookupWordAt = async (index) => {
+    const cell = localBoard[index];
+    if (!cell) return;
+    // Find the horizontal and vertical words through this cell
+    const r = Math.floor(index / 15);
+    const c = index % 15;
+    const getCell = (rr, cc) => {
+      if (rr < 0 || rr >= 15 || cc < 0 || cc >= 15) return null;
+      return localBoard[rr * 15 + cc];
+    };
+    const readWord = (sr, sc, dr, dc) => {
+      let rr = sr, cc = sc;
+      while (getCell(rr - dr, cc - dc)) { rr -= dr; cc -= dc; }
+      let w = "";
+      while (getCell(rr, cc)) { w += getCell(rr, cc).letter; rr += dr; cc += dc; }
+      return w.length > 1 ? w : null;
+    };
+    const horiz = readWord(r, c, 0, 1);
+    const vert = readWord(r, c, 1, 0);
+    const word = horiz || vert;
+    if (!word) return;
+    const def = await fetchEnglishDefinition(word);
+    setWordLookupModal({ word, definition: def });
   };
 
   const handleConfirmAndValidateTurn = async () => {
@@ -1028,6 +1187,50 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
         </div>
 
       </div>
+
+      {exchangeMode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md">
+          <div className="bg-slate-900 border-2 border-amber-500/40 rounded-3xl max-w-md w-full p-6 text-slate-200 shadow-2xl">
+            <h2 className="text-xl font-black text-amber-400 mb-2 text-center">Cambiar fichas</h2>
+            <p className="text-slate-400 text-xs text-center mb-4">Selecciona las fichas que quieres devolver a la bolsa</p>
+            <div className="flex gap-2 justify-center mb-6">
+              {localRack.map((letter, i) => letter && (
+                <button
+                  key={i}
+                  onClick={() => toggleExchangeTile(i)}
+                  className={`w-10 h-12 rounded-lg font-black text-lg transition ${
+                    tilesToExchange.includes(i)
+                      ? 'bg-rose-500 text-white ring-2 ring-rose-300'
+                      : 'bg-amber-100 text-slate-950'
+                  }`}
+                >
+                  {letter}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={cancelExchange} className="flex-1 bg-slate-800 hover:bg-slate-700 py-2.5 rounded-xl font-bold text-sm">
+                Cancelar
+              </button>
+              <button onClick={confirmExchange} className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 py-2.5 rounded-xl font-black text-sm">
+                {tilesToExchange.length === 0 ? 'Pasar sin cambiar' : `Cambiar ${tilesToExchange.length}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {wordLookupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md" onClick={() => setWordLookupModal(null)}>
+          <div className="bg-slate-900 border-2 border-sky-500/40 rounded-3xl max-w-sm w-full p-6 text-slate-200 shadow-2xl text-center" onClick={e => e.stopPropagation()}>
+            <h2 className="text-2xl font-black text-sky-400 capitalize mb-2">{wordLookupModal.word}</h2>
+            <p className="text-slate-300 text-sm italic mb-4">"{wordLookupModal.definition}"</p>
+            <button onClick={() => setWordLookupModal(null)} className="w-full bg-sky-500 hover:bg-sky-400 text-slate-950 py-2.5 rounded-xl font-black">
+              Cerrar
+            </button>
+          </div>
+        </div>
+      )}
 
       {definitionModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-fade-in">
