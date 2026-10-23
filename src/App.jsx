@@ -284,17 +284,17 @@ const findComputerMove = async (rack, dict, board) => {
   const isEmpty = board.every(c => c === null);
   const CENTER = 112;
 
-  // Collect candidate words (prefer shorter for speed)
+  // Collect candidate words, prefer longer
   const candidates = [];
-  for (let len = 2; len <= Math.min(letters.length, 5); len++) {
+  for (let len = Math.min(letters.length, 6); len >= 2; len--) {
     const combos = getCombinations(letters, len);
-    for (const combo of combos.slice(0, 200)) {
+    for (const combo of combos.slice(0, 150)) {
       const word = combo.join('');
       if (dict.has(normalizeWordForDict(word))) {
         candidates.push({ word, letters: combo });
       }
     }
-    if (candidates.length > 20) break;
+    if (candidates.length >= 15) break;
   }
   if (candidates.length === 0) return null;
 
@@ -307,13 +307,23 @@ const findComputerMove = async (rack, dict, board) => {
 };
 
 const allWordsValid = (board, positions, letters, dict) => {
-  // Build temporary board with the new tiles
   const temp = [...board];
   positions.forEach((idx, i) => { temp[idx] = { letter: letters[i] }; });
   const placed = positions.map((idx, i) => ({ index: idx, letter: letters[i] }));
   const words = extractFormedWords(temp, placed);
   if (words.length === 0) return false;
-  return words.every(w => dict.has(normalizeWordForDict(w)));
+  // Every formed word (main + all cross-words) must be in the dictionary
+  for (const w of words) {
+    if (!dict.has(normalizeWordForDict(w))) return false;
+  }
+  // Extra check: every newly placed tile must participate in at least one valid word
+  for (const p of placed) {
+    const r = Math.floor(p.index / 15);
+    const c = p.index % 15;
+    const hasHoriz = extractFormedWords(temp, [p]).some(w => w.length > 1);
+    if (!hasHoriz) return false;
+  }
+  return true;
 };
 
 const tryPlaceWord = (board, letters, isEmpty, center, dict) => {
@@ -648,6 +658,7 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
   const [exchangeMode, setExchangeMode] = useState(false);
   const [tilesToExchange, setTilesToExchange] = useState([]);
   const [wordLookupModal, setWordLookupModal] = useState(null);
+  const [toast, setToast] = useState(null);
 
   useEffect(() => {
     if (gameState) {
@@ -690,6 +701,8 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
         }
       }
 
+      const computerPassed = !(move && move.positions);
+
       // Switch back to human
       onLocalUpdate({
         board: newBoard,
@@ -702,6 +715,11 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
           }
         }
       });
+
+      if (computerPassed) {
+        setToast("La computadora pasó su turno");
+        setTimeout(() => setToast(null), 2500);
+      }
     };
 
     const timer = setTimeout(playComputerTurn, 800);
@@ -792,7 +810,15 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
 
   const handleDragStart = (e, rackIndex) => {
     if (!isMyTurn || localRack[rackIndex] === null) return;
-    e.dataTransfer.setData("text/plain", rackIndex.toString());
+    e.dataTransfer.setData("text/plain", "rack:" + rackIndex);
+  };
+
+  const handleBoardDragStart = (e, boardIndex) => {
+    if (!isMyTurn) return;
+    const cell = localBoard[boardIndex];
+    if (!cell?.isNew) return;
+    e.dataTransfer.setData("text/plain", "board:" + boardIndex);
+    e.stopPropagation();
   };
 
   const handleDragOver = (e) => {
@@ -801,11 +827,42 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
 
   const handleDrop = (e, targetIndex) => {
     e.preventDefault();
-    const rackIndexStr = e.dataTransfer.getData("text/plain");
-    if (rackIndexStr !== "") {
-      const rackIndex = parseInt(rackIndexStr, 10);
+    const data = e.dataTransfer.getData("text/plain");
+    if (!data) return;
+
+    if (data.startsWith("board:")) {
+      // Moving an already-placed tile
+      const fromIndex = parseInt(data.slice(6), 10);
+      if (fromIndex === targetIndex) return;
+      if (localBoard[targetIndex] !== null) return; // can't drop on occupied
+      const placed = placedTiles.find(t => t.index === fromIndex);
+      if (!placed) return;
+      const newBoard = [...localBoard];
+      newBoard[fromIndex] = null;
+      newBoard[targetIndex] = { letter: placed.letter, isNew: true };
+      setLocalBoard(newBoard);
+      setPlacedTiles(placedTiles.map(t => t.index === fromIndex ? { ...t, index: targetIndex } : t));
+      return;
+    }
+
+    if (data.startsWith("rack:")) {
+      const rackIndex = parseInt(data.slice(5), 10);
       placeTileAtBoardIndex(targetIndex, rackIndex);
     }
+  };
+
+  const handleRackDrop = (e, targetRackIndex) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const data = e.dataTransfer.getData("text/plain");
+    if (!data.startsWith("rack:")) return;
+    const fromIndex = parseInt(data.slice(5), 10);
+    if (fromIndex === targetRackIndex) return;
+    const newRack = [...localRack];
+    // Swap the two positions
+    [newRack[fromIndex], newRack[targetRackIndex]] = [newRack[targetRackIndex], newRack[fromIndex]];
+    setLocalRack(newRack);
+    setSelectedRackIndex(null);
   };
 
   const handleUndoSingle = () => {
@@ -1058,6 +1115,11 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
 
   return (
     <div className="flex-1 flex flex-col justify-between p-3 gap-2 bg-slate-950 overflow-hidden relative">
+      {toast && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-slate-800 border border-amber-500/40 text-amber-300 px-4 py-2 rounded-xl text-sm font-semibold shadow-lg animate-fade-in">
+          {toast}
+        </div>
+      )}
       
       <div className="flex items-center justify-between bg-slate-900 border border-slate-800 px-4 py-2 rounded-2xl shrink-0">
         <div className="flex items-center gap-3">
@@ -1131,12 +1193,14 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
               return (
                 <div 
                   key={`${r}-${c}`}
+                  draggable={!!cell?.isNew && isMyTurn}
+                  onDragStart={(e) => handleBoardDragStart(e, index)}
                   onClick={() => handleBoardClick(index)}
                   onDragOver={handleDragOver}
                   onDrop={(e) => handleDrop(e, index)}
                   className={`relative flex items-center justify-center rounded-md font-bold text-xs select-none transition-all cursor-pointer ${
                     cell ? 'bg-amber-100 border-b-2 border-r-2 border-amber-300 shadow-lg' : bgClass
-                  } ${cell?.isNew ? 'ring-2 ring-emerald-400 z-10 animate-pulse' : ''}`}
+                  } ${cell?.isNew ? 'ring-2 ring-emerald-400 z-10 animate-pulse cursor-grab' : ''}`}
                 >
                   {cell ? (
                     <span className="text-slate-950 text-base md:text-xl font-black flex items-center justify-center">
@@ -1188,6 +1252,8 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
                 key={i}
                 draggable={isMyTurn && letter !== null}
                 onDragStart={(e) => handleDragStart(e, i)}
+                onDragOver={handleDragOver}
+                onDrop={(e) => handleRackDrop(e, i)}
                 onClick={() => handleRackClick(i)}
                 className={`
                   relative w-11 h-13 md:w-12 md:h-14 rounded-xl flex items-center justify-center font-black text-xl md:text-2xl select-none transition-all
@@ -1211,7 +1277,15 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
           </div>
         </div>
 
-        <div className="flex gap-2 w-56">
+        <div className="flex gap-2 w-64">
+          <button 
+            onClick={handleShuffleRack}
+            disabled={!isMyTurn || isValidating}
+            className="flex items-center justify-center gap-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed border border-slate-700 px-3 py-2.5 rounded-xl font-bold transition text-xs text-slate-300 active:scale-95"
+            title="Mezclar fichas"
+          >
+            <RefreshCw size={14}/>
+          </button>
           <button 
             onClick={handlePassTurn}
             disabled={!isMyTurn || isValidating}
