@@ -188,6 +188,7 @@ export default function App() {
   const [view, setView] = useState('lobby'); // 'lobby', 'game'
   const [roomCode, setRoomCode] = useState('');
   const [gameState, setGameState] = useState(null);
+  const [isSinglePlayer, setIsSinglePlayer] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
   const [dictLoaded, setDictLoaded] = useState(false);
 
@@ -270,8 +271,32 @@ export default function App() {
     }
   };
 
+  const startSinglePlayer = () => {
+    const localUser = { uid: 'local-player', displayName: 'Tú' };
+    const initialBoard = Array(225).fill(null);
+    let bag = [...INITIAL_BAG].sort(() => Math.random() - 0.5);
+    const rack = bag.splice(0, 7);
+
+    const localGame = {
+      players: {
+        'local-player': { name: 'Tú', score: 0, rack, isHost: true }
+      },
+      board: initialBoard,
+      bag,
+      currentTurn: 'local-player',
+      status: 'playing',
+      code: 'SOLO'
+    };
+
+    setUser(localUser);
+    setGameState(localGame);
+    setRoomCode('SOLO');
+    setIsSinglePlayer(true);
+    setView('game');
+  };
+
   useEffect(() => {
-    if (view === 'game' && roomCode && user) {
+    if (!isSinglePlayer && view === 'game' && roomCode && user) {
       const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomCode);
       const unsubscribe = onSnapshot(roomRef, (docSnap) => {
         if (docSnap.exists()) {
@@ -284,26 +309,45 @@ export default function App() {
     }
   }, [view, roomCode, user]);
 
-  if (!user) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-slate-900 text-amber-400 font-sans">
-        <div className="flex items-center gap-3 text-xl font-semibold">
-          <RefreshCw className="animate-spin" /> Conectando al servidor...
-        </div>
-      </div>
-    );
-  }
+  // Single-player works without auth. Multiplayer waits for user.
+  const multiplayerReady = !!user;
 
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-100 font-sans overflow-hidden flex flex-col select-none">
       {view === 'lobby' ? (
-        <Lobby onCreate={createRoom} onJoin={joinRoom} onOpenInstructions={() => setShowInstructions(true)} dictLoaded={dictLoaded} />
+        <Lobby 
+          onCreate={createRoom} 
+          onJoin={joinRoom} 
+          onSinglePlayer={startSinglePlayer}
+          multiplayerReady={multiplayerReady}
+          onOpenInstructions={() => setShowInstructions(true)} 
+          dictLoaded={dictLoaded} 
+        />
       ) : (
         <GameScreen 
           gameState={gameState} 
           user={user} 
           roomCode={roomCode} 
-          onLeave={() => setView('lobby')} 
+          isSinglePlayer={isSinglePlayer}
+          onLocalUpdate={(updates) => {
+            if (isSinglePlayer) {
+              setGameState(prev => {
+                if (!prev) return prev;
+                const next = { ...prev };
+                if (updates.board) next.board = updates.board;
+                if (updates.bag) next.bag = updates.bag;
+                if (updates.currentTurn) next.currentTurn = updates.currentTurn;
+                if (updates.players) {
+                  next.players = { ...next.players };
+                  Object.keys(updates.players).forEach(uid => {
+                    next.players[uid] = { ...next.players[uid], ...updates.players[uid] };
+                  });
+                }
+                return next;
+              });
+            }
+          }}
+          onLeave={() => { setView('lobby'); setIsSinglePlayer(false); setGameState(null); }} 
           onOpenInstructions={() => setShowInstructions(true)}
         />
       )}
@@ -315,7 +359,7 @@ export default function App() {
   );
 }
 
-function Lobby({ onCreate, onJoin, onOpenInstructions, dictLoaded }) {
+function Lobby({ onCreate, onJoin, onSinglePlayer, multiplayerReady, onOpenInstructions, dictLoaded }) {
   const [joinCode, setJoinCode] = useState('');
 
   return (
@@ -325,7 +369,7 @@ function Lobby({ onCreate, onJoin, onOpenInstructions, dictLoaded }) {
           <Sparkles size={36} />
         </div>
         <h1 className="text-4xl font-black mb-1 tracking-wide text-amber-400 uppercase">Scrabble Español</h1>
-        <p className="text-slate-400 text-sm mb-4">Aprende y juega vocabulario en español con amigos</p>
+        <p className="text-slate-400 text-sm mb-4">Practica vocabulario en español — solo o con amigos</p>
 
         <div className="inline-flex items-center gap-2 bg-slate-950 border border-slate-800 text-xs px-3 py-1.5 rounded-full mb-6 text-slate-400">
           <BookOpen size={14} className={dictLoaded ? "text-emerald-400" : "text-amber-400 animate-pulse"} />
@@ -334,8 +378,26 @@ function Lobby({ onCreate, onJoin, onOpenInstructions, dictLoaded }) {
 
         <div className="space-y-4">
           <button 
+            onClick={onSinglePlayer}
+            className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-slate-950 font-black py-4 px-6 rounded-2xl text-lg transition shadow-lg shadow-emerald-500/20 active:scale-95"
+          >
+            <Play size={22} className="fill-current" /> Jugar Solo (sin conexión)
+          </button>
+
+          <div className="relative flex items-center py-1">
+            <div className="flex-grow border-t border-slate-800"></div>
+            <span className="flex-shrink-0 mx-4 text-xs font-bold text-slate-500 uppercase tracking-wider">o multijugador</span>
+            <div className="flex-grow border-t border-slate-800"></div>
+          </div>
+
+          <button 
             onClick={onCreate}
-            className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black py-4 px-6 rounded-2xl text-lg transition shadow-lg shadow-amber-500/20 active:scale-95"
+            disabled={!multiplayerReady}
+            className={`w-full flex items-center justify-center gap-2 font-black py-4 px-6 rounded-2xl text-lg transition shadow-lg active:scale-95 ${
+              multiplayerReady 
+                ? 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 shadow-amber-500/20' 
+                : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+            }`}
           >
             <Play size={22} className="fill-current" /> Crear Nueva Partida
           </button>
@@ -357,7 +419,12 @@ function Lobby({ onCreate, onJoin, onOpenInstructions, dictLoaded }) {
             />
             <button 
               onClick={() => onJoin(joinCode)}
-              className="bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 font-bold px-6 rounded-2xl text-base transition active:scale-95"
+              disabled={!multiplayerReady}
+              className={`font-bold px-6 rounded-2xl text-base transition active:scale-95 ${
+                multiplayerReady 
+                  ? 'bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30' 
+                  : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+              }`}
             >
               Unirse
             </button>
@@ -375,7 +442,7 @@ function Lobby({ onCreate, onJoin, onOpenInstructions, dictLoaded }) {
   );
 }
 
-function GameScreen({ gameState, user, roomCode, onLeave, onOpenInstructions }) {
+function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, onLeave, onOpenInstructions }) {
   const [selectedRackIndex, setSelectedRackIndex] = useState(null);
   const [localBoard, setLocalBoard] = useState(null);
   const [localRack, setLocalRack] = useState(null);
@@ -498,11 +565,16 @@ function GameScreen({ gameState, user, roomCode, onLeave, onOpenInstructions }) 
     if (!isMyTurn) return;
     handleClearAll();
 
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomCode);
     const playerIds = Object.keys(gameState.players);
     const currentIndex = playerIds.indexOf(user.uid);
-    const nextTurn = playerIds[(currentIndex + 1) % playerIds.length];
+    const nextTurn = isSinglePlayer ? user.uid : playerIds[(currentIndex + 1) % playerIds.length];
 
+    if (isSinglePlayer && onLocalUpdate) {
+      onLocalUpdate({ currentTurn: nextTurn });
+      return;
+    }
+
+    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomCode);
     try {
       await updateDoc(roomRef, { currentTurn: nextTurn });
     } catch (e) {
@@ -578,6 +650,31 @@ function GameScreen({ gameState, user, roomCode, onLeave, onOpenInstructions }) 
 
   const handleCompleteTurnAndAdvance = async () => {
     if (!definitionModal) return;
+
+    if (isSinglePlayer && onLocalUpdate) {
+      const payload = definitionModal.turnPayload;
+      const playerUpdate = {};
+      // Convert dotted player paths into nested object for local update
+      Object.keys(payload).forEach(k => {
+        if (k.startsWith('players.')) {
+          const parts = k.split('.');
+          const uid = parts[1];
+          const field = parts[2];
+          if (!playerUpdate[uid]) playerUpdate[uid] = {};
+          playerUpdate[uid][field] = payload[k];
+        }
+      });
+      onLocalUpdate({
+        board: payload.board,
+        bag: payload.bag,
+        currentTurn: payload.currentTurn,
+        players: playerUpdate
+      });
+      setPlacedTiles([]);
+      setDefinitionModal(null);
+      return;
+    }
+
     const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomCode);
     try {
       await updateDoc(roomRef, definitionModal.turnPayload);
@@ -593,9 +690,11 @@ function GameScreen({ gameState, user, roomCode, onLeave, onOpenInstructions }) 
       
       <div className="flex items-center justify-between bg-slate-900 border border-slate-800 px-4 py-2 rounded-2xl shrink-0">
         <div className="flex items-center gap-3">
-          <span className="text-xs font-bold uppercase tracking-widest text-slate-400">Código de Sala:</span>
+          <span className="text-xs font-bold uppercase tracking-widest text-slate-400">
+            {isSinglePlayer ? 'Modo:' : 'Código de Sala:'}
+          </span>
           <span className="bg-slate-950 border border-amber-500/30 px-3 py-1 rounded-xl text-amber-400 font-mono font-black text-lg tracking-wider">
-            {roomCode}
+            {isSinglePlayer ? 'SOLO' : roomCode}
           </span>
         </div>
 
