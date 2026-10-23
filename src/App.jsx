@@ -38,11 +38,18 @@ const BOARD_LAYOUT = [
 ];
 
 const TILE_POINTS = {
-  A:1, Á:1, B:3, C:3, D:2, E:1, É:1, F:4, G:2, H:4, I:1, Í:1, J:8, L:1, M:3, 
-  N:1, Ñ:8, O:1, Ó:1, P:3, Q:5, R:1, S:1, T:1, U:1, Ú:1, V:4, X:8, Z:10
+  A:1, Á:1, B:3, C:3, D:2, E:1, É:1, F:4, G:2, H:4, I:1, Í:1, J:8, L:1,
+  LL:8, M:3, N:1, Ñ:8, O:1, Ó:1, P:3, Q:5, R:1, RR:8, S:1, T:1, U:1, Ú:1,
+  V:4, X:8, Z:10
 };
 
-const INITIAL_BAG = "AAAAAAAAAAAABBBCCCCHDDDDDEEEEEEEEEEEEFGGHHIIIIIIJLLLLMMNNNNNNOOOOOOOOOPPQRRRRRSSSSSSTTTTUUUUUVXZZ".split('');
+const INITIAL_BAG = (
+  "A".repeat(12) + "E".repeat(12) + "O".repeat(9) + "I".repeat(6) +
+  "S".repeat(6) + "U".repeat(5) + "N".repeat(5) + "R".repeat(5) +
+  "L".repeat(4) + "T".repeat(4) + "D".repeat(5) + "G".repeat(2) +
+  "C".repeat(4) + "B".repeat(2) + "M".repeat(2) + "P".repeat(2) +
+  "H".repeat(2) + "F" + "V" + "Q" + "J" + "X" + "Z" + "Ñ"
+).split('');
 
 const toggleLetter = (letter) => {
   const toggles = {
@@ -51,16 +58,21 @@ const toggleLetter = (letter) => {
     'I': 'Í', 'Í': 'I',
     'O': 'Ó', 'Ó': 'O',
     'U': 'Ú', 'Ú': 'U',
-    'N': 'Ñ', 'Ñ': 'N'
+    'N': 'Ñ', 'Ñ': 'N',
+    'L': 'LL', 'LL': 'L',
+    'R': 'RR', 'RR': 'R'
   };
   return toggles[letter] || letter;
 };
 
 // Utility to normalize Spanish words for dictionary lookup (removing accents & converting lowercase)
 const normalizeWordForDict = (word) => {
+  // Lowercase, protect ñ, strip other accents, restore ñ
   return word.toLowerCase()
+    .replace(/ñ/g, "\u0001")
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\u0001/g, "ñ");
 };
 
 // Global dictionary set cache
@@ -643,68 +655,44 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
     if (!isSinglePlayer || !gameState || gameState.currentTurn !== 'computer') return;
     if (!onLocalUpdate) return;
 
-const playComputerTurn = async () => {
-  const dict = await loadSpanishDictionary();
-  const computer = gameState.players.computer;
-  if (!computer || !dict) return;
+    const playComputerTurn = async () => {
+      const dict = await loadSpanishDictionary();
+      const computer = gameState.players.computer;
+      if (!computer) return;
 
-  const letters = computer.rack.filter(Boolean);
-  if (letters.length < 2) {
-    // Just pass
-    onLocalUpdate({ currentTurn: 'local-player' });
-    return;
-  }
+      const move = await findComputerMove(computer.rack, dict, gameState.board);
+      let newBoard = [...gameState.board];
+      let newBag = [...gameState.bag];
+      let newRack = [...computer.rack];
+      let scoreAdd = 0;
 
-  // Build a few candidate words from the rack
-  const candidates = [];
-  for (let len = Math.min(letters.length, 5); len >= 2; len--) {
-    const combos = getCombinations(letters, len);
-    for (const combo of combos.slice(0, 100)) {
-      const word = combo.join('');
-      if (dict.has(normalizeWordForDict(word))) {
-        candidates.push({ word, letters: combo });
+      if (move && move.positions) {
+        for (let i = 0; i < move.letters.length; i++) {
+          const idx = move.positions[i];
+          newBoard[idx] = { letter: move.letters[i] };
+          scoreAdd += (TILE_POINTS[move.letters[i]] || 0) + 2;
+          const ri = newRack.indexOf(move.letters[i]);
+          if (ri !== -1) newRack[ri] = null;
+        }
+        newRack = newRack.filter(Boolean);
+        while (newRack.length < 7 && newBag.length > 0) {
+          newRack.push(newBag.pop());
+        }
       }
-    }
-    if (candidates.length >= 10) break;
-  }
 
-  const isEmpty = gameState.board.every(c => c === null);
-  const CENTER = 112;
-  let placed = false;
-  let newBoard = [...gameState.board];
-  let newRack = [...computer.rack];
-  let newBag = [...gameState.bag];
-  let scoreAdd = 0;
-
-  for (const cand of candidates) {
-    const positions = tryPlaceWord(gameState.board, cand.letters, isEmpty, CENTER, dict);
-    if (positions) {
-      for (let i = 0; i < cand.letters.length; i++) {
-        newBoard[positions[i]] = { letter: cand.letters[i] };
-        scoreAdd += (TILE_POINTS[cand.letters[i]] || 0) + 2;
-        const ri = newRack.indexOf(cand.letters[i]);
-        if (ri !== -1) newRack[ri] = null;
-      }
-      newRack = newRack.filter(Boolean);
-      while (newRack.length < 7 && newBag.length > 0) newRack.push(newBag.pop());
-      placed = true;
-      break;
-    }
-  }
-
-  // If nothing legal was found, just pass the turn
-  onLocalUpdate({
-    board: placed ? newBoard : gameState.board,
-    bag: placed ? newBag : gameState.bag,
-    currentTurn: 'local-player',
-    players: {
-      computer: {
-        rack: placed ? newRack : computer.rack,
-        score: (computer.score || 0) + scoreAdd
-      }
-    }
-  });
-};
+      // Switch back to human
+      onLocalUpdate({
+        board: newBoard,
+        bag: newBag,
+        currentTurn: 'local-player',
+        players: {
+          computer: {
+            rack: newRack,
+            score: (computer.score || 0) + scoreAdd
+          }
+        }
+      });
+    };
 
     const timer = setTimeout(playComputerTurn, 800);
     return () => clearTimeout(timer);
