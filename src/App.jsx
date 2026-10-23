@@ -643,44 +643,68 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
     if (!isSinglePlayer || !gameState || gameState.currentTurn !== 'computer') return;
     if (!onLocalUpdate) return;
 
-    const playComputerTurn = async () => {
-      const dict = await loadSpanishDictionary();
-      const computer = gameState.players.computer;
-      if (!computer) return;
+const playComputerTurn = async () => {
+  const dict = await loadSpanishDictionary();
+  const computer = gameState.players.computer;
+  if (!computer || !dict) return;
 
-      const move = await findComputerMove(computer.rack, dict, gameState.board);
-      let newBoard = [...gameState.board];
-      let newBag = [...gameState.bag];
-      let newRack = [...computer.rack];
-      let scoreAdd = 0;
+  const letters = computer.rack.filter(Boolean);
+  if (letters.length < 2) {
+    // Just pass
+    onLocalUpdate({ currentTurn: 'local-player' });
+    return;
+  }
 
-      if (move && move.positions) {
-        for (let i = 0; i < move.letters.length; i++) {
-          const idx = move.positions[i];
-          newBoard[idx] = { letter: move.letters[i] };
-          scoreAdd += (TILE_POINTS[move.letters[i]] || 0) + 2;
-          const ri = newRack.indexOf(move.letters[i]);
-          if (ri !== -1) newRack[ri] = null;
-        }
-        newRack = newRack.filter(Boolean);
-        while (newRack.length < 7 && newBag.length > 0) {
-          newRack.push(newBag.pop());
-        }
+  // Build a few candidate words from the rack
+  const candidates = [];
+  for (let len = Math.min(letters.length, 5); len >= 2; len--) {
+    const combos = getCombinations(letters, len);
+    for (const combo of combos.slice(0, 100)) {
+      const word = combo.join('');
+      if (dict.has(normalizeWordForDict(word))) {
+        candidates.push({ word, letters: combo });
       }
+    }
+    if (candidates.length >= 10) break;
+  }
 
-      // Switch back to human
-      onLocalUpdate({
-        board: newBoard,
-        bag: newBag,
-        currentTurn: 'local-player',
-        players: {
-          computer: {
-            rack: newRack,
-            score: (computer.score || 0) + scoreAdd
-          }
-        }
-      });
-    };
+  const isEmpty = gameState.board.every(c => c === null);
+  const CENTER = 112;
+  let placed = false;
+  let newBoard = [...gameState.board];
+  let newRack = [...computer.rack];
+  let newBag = [...gameState.bag];
+  let scoreAdd = 0;
+
+  for (const cand of candidates) {
+    const positions = tryPlaceWord(gameState.board, cand.letters, isEmpty, CENTER, dict);
+    if (positions) {
+      for (let i = 0; i < cand.letters.length; i++) {
+        newBoard[positions[i]] = { letter: cand.letters[i] };
+        scoreAdd += (TILE_POINTS[cand.letters[i]] || 0) + 2;
+        const ri = newRack.indexOf(cand.letters[i]);
+        if (ri !== -1) newRack[ri] = null;
+      }
+      newRack = newRack.filter(Boolean);
+      while (newRack.length < 7 && newBag.length > 0) newRack.push(newBag.pop());
+      placed = true;
+      break;
+    }
+  }
+
+  // If nothing legal was found, just pass the turn
+  onLocalUpdate({
+    board: placed ? newBoard : gameState.board,
+    bag: placed ? newBag : gameState.bag,
+    currentTurn: 'local-player',
+    players: {
+      computer: {
+        rack: placed ? newRack : computer.rack,
+        score: (computer.score || 0) + scoreAdd
+      }
+    }
+  });
+};
 
     const timer = setTimeout(playComputerTurn, 800);
     return () => clearTimeout(timer);
