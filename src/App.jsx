@@ -98,14 +98,14 @@ const loadSpanishDictionary = async () => {
   return spanishDictionarySet;
 };
 
-// Free translation via MyMemory (no API key required)
+// Free Spanish→English translation (no API key)
 const fetchEnglishDefinition = async (spanishWord) => {
   try {
-    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(spanishWord)}&langpair=es|en`;
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=es&tl=en&dt=t&q=${encodeURIComponent(spanishWord)}`;
     const res = await fetch(url);
     const data = await res.json();
-    const translated = data?.responseData?.translatedText;
-    if (translated && translated.toLowerCase() !== spanishWord.toLowerCase()) {
+    const translated = data?.[0]?.[0]?.[0];
+    if (translated && typeof translated === 'string' && translated.toLowerCase() !== spanishWord.toLowerCase()) {
       return translated;
     }
     return "No English translation found.";
@@ -116,6 +116,86 @@ const fetchEnglishDefinition = async (spanishWord) => {
 };
 
 // Helper to extract words created by placed tiles on a 15x15 board
+
+// Validate Scrabble placement rules
+const validatePlacement = (board, placedTiles, isFirstMove) => {
+  if (!placedTiles || placedTiles.length === 0) {
+    return { ok: false, message: "Coloca al menos una ficha." };
+  }
+
+  const positions = placedTiles.map(t => ({
+    r: Math.floor(t.index / 15),
+    c: t.index % 15,
+    index: t.index
+  }));
+
+  const rows = positions.map(p => p.r);
+  const cols = positions.map(p => p.c);
+  const sameRow = rows.every(r => r === rows[0]);
+  const sameCol = cols.every(c => c === cols[0]);
+
+  if (!sameRow && !sameCol) {
+    return { ok: false, message: "Todas las fichas deben estar en la misma fila o columna." };
+  }
+
+  // Contiguous check (no gaps in the line of play)
+  if (sameRow) {
+    const sorted = [...positions].sort((a, b) => a.c - b.c);
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].c !== sorted[i-1].c + 1) {
+        // Check if gap is filled by existing board tiles
+        for (let c = sorted[i-1].c + 1; c < sorted[i].c; c++) {
+          if (board[sorted[0].r * 15 + c] === null) {
+            return { ok: false, message: "Las fichas deben formar una línea continua (sin huecos)." };
+          }
+        }
+      }
+    }
+  } else {
+    const sorted = [...positions].sort((a, b) => a.r - b.r);
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].r !== sorted[i-1].r + 1) {
+        for (let r = sorted[i-1].r + 1; r < sorted[i].r; r++) {
+          if (board[r * 15 + sorted[0].c] === null) {
+            return { ok: false, message: "Las fichas deben formar una línea continua (sin huecos)." };
+          }
+        }
+      }
+    }
+  }
+
+  const CENTER = 112; // row 7, col 7
+
+  if (isFirstMove) {
+    const coversCenter = positions.some(p => p.index === CENTER);
+    if (!coversCenter) {
+      return { ok: false, message: "La primera palabra debe cubrir la estrella del centro." };
+    }
+    if (placedTiles.length < 2) {
+      return { ok: false, message: "La primera palabra debe tener al menos 2 letras." };
+    }
+  } else {
+    // Must touch at least one existing tile (edge-adjacent, not diagonal)
+    const touchesExisting = positions.some(p => {
+      const neighbors = [
+        [p.r - 1, p.c], [p.r + 1, p.c],
+        [p.r, p.c - 1], [p.r, p.c + 1]
+      ];
+      return neighbors.some(([nr, nc]) => {
+        if (nr < 0 || nr >= 15 || nc < 0 || nc >= 15) return false;
+        const cell = board[nr * 15 + nc];
+        // Existing tile that was not just placed this turn
+        return cell !== null && !placedTiles.some(pt => pt.index === nr * 15 + nc);
+      });
+    });
+    if (!touchesExisting) {
+      return { ok: false, message: "La palabra debe conectar con las fichas ya colocadas en el tablero." };
+    }
+  }
+
+  return { ok: true };
+};
+
 const extractFormedWords = (board, placedTiles) => {
   if (!placedTiles || placedTiles.length === 0) return [];
   
@@ -662,6 +742,15 @@ function GameScreen({ gameState, user, roomCode, isSinglePlayer, onLocalUpdate, 
     if (!isMyTurn || placedTiles.length === 0) return;
 
     setIsValidating(true);
+
+    // Check if board is empty (first move)
+    const isFirstMove = gameState.board.every(cell => cell === null);
+    const placement = validatePlacement(localBoard, placedTiles, isFirstMove);
+    if (!placement.ok) {
+      setInvalidWordModal({ invalidWords: [placement.message] });
+      setIsValidating(false);
+      return;
+    }
     
     const dict = await loadSpanishDictionary();
     const formedWords = extractFormedWords(localBoard, placedTiles);
