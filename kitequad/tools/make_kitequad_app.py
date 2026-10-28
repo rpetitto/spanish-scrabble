@@ -514,9 +514,9 @@ swap('''      {view === 'lobby' ? (
           dictLoaded={dictLoaded}
           error={lobbyError}
         />''')
-swap('''          onLeave={() => { setView('lobby'); setIsSinglePlayer(false); setGameState(null); }} ''',
+swap('''          onLeave={() => { setView('lobby'); setIsSinglePlayer(false); setGameState(null); }}''',
      '''          onRoomSaved={showRoom}
-          onLeave={() => { setView('lobby'); setIsSinglePlayer(false); setGameState(null); }} ''')
+          onLeave={() => { setView('lobby'); setIsSinglePlayer(false); setGameState(null); }}''')
 
 # --- Lobby: show messages in the page (alert() is blocked in KiteQuad's sandbox) -------
 swap('''function Lobby({ onCreate, onJoin, onSinglePlayer, multiplayerReady, onOpenInstructions, dictLoaded }) {''',
